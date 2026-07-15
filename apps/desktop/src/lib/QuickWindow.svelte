@@ -14,7 +14,7 @@
   let quickConversationId = $state('');
   let proactiveArrival = $state<{id: string; body: string; origin?: 'ai' | 'system'; chainId?: string} | null>(null);
 
-  type StoredConversation = {id: string; title: string; createdAt: number; updatedAt: number; scope: 'global'; messages: Array<{id: string; role: 'user' | 'assistant'; text: string; time: string}>; archived?: boolean};
+  type StoredConversation = {id: string; title: string; createdAt: number; updatedAt: number; scope: 'global' | 'project'; messages: Array<{id: string; role: 'user' | 'assistant'; text: string; time: string}>; archived?: boolean};
 
   onMount(() => {
     input.focus();

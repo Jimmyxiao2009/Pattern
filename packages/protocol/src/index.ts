@@ -208,6 +208,17 @@ export interface ModelUsageMetrics {
   requests: number;
   contextWindow?: number;
   balance?: string;
+  cost?: number;
+  costCurrency?: string;
+  lastRequest?: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    durationMs?: number;
+    cost?: number;
+    costCurrency?: string;
+    at: number;
+  };
   updatedAt: number;
 }
 

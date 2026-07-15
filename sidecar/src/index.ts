@@ -352,14 +352,29 @@ function modelPresets(provider: string): string[] {
   if (name.includes('openai')) return ['gpt-5.6', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano'];
   return [];
 }
-function recordUsage(provider: string, model: string, usage: any) {
+function recordUsage(provider: string, model: string, usage: any, durationMs?: number) {
   if (!usage) return;
   const key = `${provider}:${model}`;
   const previous = modelMetrics[key] || {model, provider, inputTokens: 0, outputTokens: 0, cachedTokens: 0, requests: 0, contextWindow: contextWindowFor(model), updatedAt: 0};
   const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
   const output = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
   const cached = Number(usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0);
-  modelMetrics[key] = {...previous, inputTokens: previous.inputTokens + input, outputTokens: previous.outputTokens + output, cachedTokens: previous.cachedTokens + cached, requests: previous.requests + 1, updatedAt: Date.now()};
+  const rawCost = usage.cost ?? usage.total_cost ?? usage.cost_usd ?? usage.costUsd;
+  const parsedCost = rawCost === undefined || rawCost === null || rawCost === '' ? undefined : Number(rawCost);
+  const cost = Number.isFinite(parsedCost) ? parsedCost : undefined;
+  const costCurrency = typeof usage.cost_currency === 'string' ? usage.cost_currency : typeof usage.currency === 'string' ? usage.currency : cost !== undefined ? 'USD' : undefined;
+  const at = Date.now();
+  modelMetrics[key] = {
+    ...previous,
+    inputTokens: previous.inputTokens + input,
+    outputTokens: previous.outputTokens + output,
+    cachedTokens: previous.cachedTokens + cached,
+    requests: previous.requests + 1,
+    cost: cost === undefined ? previous.cost : (previous.cost || 0) + cost,
+    costCurrency: costCurrency || previous.costCurrency,
+    lastRequest: {inputTokens: input, outputTokens: output, cachedTokens: cached, durationMs, cost, costCurrency, at},
+    updatedAt: at,
+  };
   saveModelMetrics();
   broadcast({type: 'model.metrics', id: 'update', metrics: Object.values(modelMetrics)});
 }
@@ -788,6 +803,8 @@ async function streamChat(
   setAgentState('thinking');
   send(socket, {type: 'chat.started', id: message.id, slot});
   const anthropic = config.provider.toLowerCase().includes('anthropic');
+  const startedAt = Date.now();
+  let streamUsage: any;
   const response = await fetch(endpoint(anthropic ? '/messages' : '/chat/completions'), anthropic
     ? {
         method: 'POST',
@@ -841,12 +858,13 @@ async function streamChat(
           full += delta;
           send(socket, {type: 'chat.delta', id: message.id, delta});
         }
-        if (json.usage || json.message?.usage) recordUsage(config.provider, config.model, json.usage || json.message?.usage);
+        if (json.usage || json.message?.usage) streamUsage = {...streamUsage, ...(json.usage || json.message?.usage)};
       } catch {
         /* keepalive */
       }
     }
   }
+  if (streamUsage) recordUsage(config.provider, config.model, streamUsage, Date.now() - startedAt);
   send(socket, {type: 'chat.done', id: message.id, slot});
   setAgentState('idle');
   return full;

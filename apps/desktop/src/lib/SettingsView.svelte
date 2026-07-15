@@ -4,6 +4,7 @@
   import PageHeader from './PageHeader.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from './Toggle.svelte';
+  import UsageCard from './UsageCard.svelte';
   import type {Persona, SlotBindings} from './types';
   import {runtime} from './runtime';
 
@@ -67,9 +68,10 @@
   type ModelProfile = {id:string; name:string; provider:string; endpoint:string; model:string; executorProvider:string; executorEndpoint:string; executorModel:string; executorVision:boolean};
   let profiles = $state<ModelProfile[]>([]);
   let activeProfileId = $state('default');
-  let modelMetrics = $state<Array<{model:string;provider:string;inputTokens:number;outputTokens:number;cachedTokens:number;requests:number;contextWindow?:number;balance?:string;updatedAt:number}>>([]);
+  let modelMetrics = $state<Array<{model:string;provider:string;inputTokens:number;outputTokens:number;cachedTokens:number;requests:number;contextWindow?:number;balance?:string;cost?:number;costCurrency?:string;lastRequest?:{inputTokens:number;outputTokens:number;cachedTokens:number;durationMs?:number;cost?:number;costCurrency?:string;at:number};updatedAt:number}>>([]);
   let availableModels = $state<string[]>(['gpt-5.6', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano']);
   let modelCatalogSource = $state<'provider' | 'preset'>('preset');
+  const isDemo = new URLSearchParams(location.search).has('demo');
 
   const tabs = [
     ['general', '常规'],
@@ -489,15 +491,11 @@ async function activatePersonaCard(card: Persona) {
         <p class="settings-note">数值来自模型响应中的 usage 字段；上下文窗口为模型系列标称值。余额仅在服务商公开兼容接口可用时显示。</p>
         <div><button class="quiet-button" onclick={() => refreshModelMetrics(false)}>刷新用量</button><button class="quiet-button" onclick={() => refreshModelMetrics(true)}>查询余额</button>{#if saved}<span class="save-result">{saved}</span>{/if}</div>
         <div class="model-metrics">
-          {#each modelMetrics as metric}
-            <article>
-              <strong>{metric.model}</strong><span>{metric.provider}</span>
-              <div><b>{metric.inputTokens.toLocaleString()}</b><small>输入 Token</small><b>{metric.outputTokens.toLocaleString()}</b><small>输出 Token</small><b>{metric.cachedTokens.toLocaleString()}</b><small>缓存命中</small></div>
-              <p>{metric.requests} 次请求 · 上下文 {(metric.contextWindow || 0).toLocaleString()} · 余额 {metric.balance || '未查询'}</p>
-            </article>
+          {#if modelMetrics.length}
+            {#each modelMetrics as metric}<UsageCard {metric} />{/each}
           {:else}
-            <p class="settings-note">尚无调用记录。完成一次对话或任务后可在此查看 token 与缓存命中。</p>
-          {/each}
+            <UsageCard metric={null} demo={isDemo} />
+          {/if}
         </div>
         <h2>子代理模型（可选）</h2>
         <p class="settings-note">留空时子代理复用主 Agent 模型；需要视觉或工具调用时可单独配置。</p>

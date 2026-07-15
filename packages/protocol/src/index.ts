@@ -16,6 +16,15 @@ export interface ModelEndpoint {
   vision?: boolean;
 }
 
+/** Non-secret model connection metadata shared with proactive heartbeat checks. */
+export interface ModelConnection {
+  id: string;
+  name?: string;
+  provider: string;
+  endpoint: string;
+  enabled?: boolean;
+}
+
 export interface SlotPersona {
   name: string;
   description: string;
@@ -41,6 +50,8 @@ export interface RuntimeConfigure {
   endpoint: string;
   model: string;
   apiKey: string;
+  /** Configured provider connections; never contains API keys. */
+  modelConnections?: ModelConnection[];
   persona: string;
   personaName?: string;
   userName?: string;

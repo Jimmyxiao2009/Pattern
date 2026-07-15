@@ -1,6 +1,6 @@
 <script lang="ts">
   import {onMount, tick} from 'svelte';
-  import {MessageCircleMore, Layers3, Zap, Send, Settings, Plus, Paperclip, ArrowUp, Search, Minus, Maximize2, X, Trash2, MessagesSquare, Workflow, Wrench, FolderGit2} from 'lucide-svelte';
+  import {BellRing, MessageCircleMore, Layers3, Zap, Send, Settings, Plus, Paperclip, ArrowUp, Search, Minus, Maximize2, X, Trash2, MessagesSquare, Workflow, Wrench, FolderGit2} from 'lucide-svelte';
   import StatusDot from './lib/StatusDot.svelte';
   import Oobe from './lib/Oobe.svelte';
   import QuickWindow from './lib/QuickWindow.svelte';
@@ -9,6 +9,7 @@
   import SettingsView from './lib/SettingsView.svelte';
   import MemoryEditor from './lib/MemoryEditor.svelte';
   import TasksView from './lib/TasksView.svelte';
+  import ProactiveView from './lib/ProactiveView.svelte';
   import ChannelsView from './lib/ChannelsView.svelte';
   import ConversationsView from './lib/ConversationsView.svelte';
   import WorkflowsView from './lib/WorkflowsView.svelte';
@@ -27,6 +28,7 @@
     {id: 'conversations', label: '管理', icon: MessagesSquare},
     {id: 'memory', label: '记忆', icon: Layers3},
     {id: 'tasks', label: '定时', icon: Zap},
+    {id: 'proactive', label: '主动', icon: BellRing},
     {id: 'workflows', label: '技能', icon: Workflow},
     {id: 'mcp', label: '工具', icon: Wrench},
     {id: 'channels', label: '通道', icon: Send},
@@ -1377,6 +1379,8 @@
         />
       {:else if activeView === 'tasks'}
         <TasksView {notify} initialDraft={taskDraft} onDraftConsumed={() => taskDraft = null} />
+      {:else if activeView === 'proactive'}
+        <ProactiveView {notify} />
       {:else if activeView === 'workflows'}
         <WorkflowsView {notify} defaultWorkspace={activeProject?.path || projects[0]?.path || ''} />
       {:else if activeView === 'mcp'}

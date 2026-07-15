@@ -647,6 +647,16 @@ function startTaskRun(task: TaskRecord): TaskRun {
   task.lastRunAt = run.startedAt; task.runCount = (task.runCount || 0) + 1;
   return run;
 }
+function heartbeatUrl(connection: {provider: string; endpoint: string}) {
+  const base = connection.endpoint.replace(/\/+$/, '');
+  return connection.provider.toLowerCase().includes('anthropic') ? base : `${base}/models`;
+}
+function heartbeatChecks(): HealthCheckConfig[] {
+  const configured = (config?.modelConnections || [])
+    .filter((item) => item.enabled !== false && item.provider?.trim() && /^https?:\/\//i.test(item.endpoint || ''))
+    .map((item) => ({url: heartbeatUrl(item), label: `${item.name?.trim() || item.provider} · 模型服务`}));
+  return configured.length ? configured.slice(0, 20) : healthChecks;
+}
 function finishTaskRun(task: TaskRecord, status: TaskRun['status'], error?: string) {
   const run = task.runs?.find((item) => item.id === task.activeRunId);
   if (run) { run.status = status; run.finishedAt = Date.now(); run.error = error; }
@@ -667,11 +677,19 @@ async function scheduledTaskTick() {
   }
 }
 async function healthTick() {
-  for (const check of healthChecks) {
+  for (const check of heartbeatChecks()) {
     let online = false;
     try {
-      const response = await fetch(check.url, {signal: AbortSignal.timeout(10_000)});
-      online = response.ok;
+      const active = config && check.url.startsWith(heartbeatUrl({provider: config.provider, endpoint: config.endpoint}));
+      const provider = config?.provider.toLowerCase() || '';
+      const headers = active && config?.apiKey
+        ? provider.includes('anthropic')
+          ? {'x-api-key': config.apiKey}
+          : {authorization: `Bearer ${config.apiKey}`}
+        : undefined;
+      const response = await fetch(check.url, {headers, signal: AbortSignal.timeout(10_000)});
+      // 401/404 still proves the supplier is reachable; only transport/server failures are offline.
+      online = response.status < 500;
     } catch { /* offline */ }
     const previous = healthStates.get(check.url);
     healthStates.set(check.url, online);
@@ -1977,6 +1995,7 @@ case 'journal.list': {
 }
 function applyConfig(next: RuntimeConfigure) {
   config = next;
+  healthStates.clear();
   if (next.proactive) {
     proactive.setConfig({
       enabled: next.proactive.enabled,

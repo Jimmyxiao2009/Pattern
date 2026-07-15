@@ -78,7 +78,6 @@
     ['general', '常规'],
     ['persona', '人格与角色'],
     ['model', '模型'],
-    ['proactive', '主动性'],
     ['filewatch', '文件感知'],
     ['journal', '执行日志'],
     ['privacy', '隐私与权限'],
@@ -279,7 +278,7 @@
       syncActiveProfile();
       const {invoke} = await import('@tauri-apps/api/core');
       await invoke('save_model_config', {
-        config: {provider, endpoint, model, profileId:activeProfileId, agentProvider, agentEndpoint, agentModel, executorProvider, executorEndpoint, executorModel, executorVision, localEmbedding,plaaUrl},
+        config: {provider, endpoint, model, profileId:activeProfileId, connections: profiles.map((item) => ({id:item.id, name:item.name, provider:item.provider, endpoint:item.endpoint, enabled:true})), agentProvider, agentEndpoint, agentModel, executorProvider, executorEndpoint, executorModel, executorVision, localEmbedding,plaaUrl},
         apiKey: apiKey || null,
         executorApiKey: executorApiKey || null,
         agentApiKey: agentApiKey || null,

@@ -48,10 +48,24 @@ impl Default for SlotBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+struct ModelConnection {
+    id: String,
+    #[serde(default)]
+    name: String,
+    provider: String,
+    endpoint: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct ModelConfig {
     provider: String,
     endpoint: String,
     model: String,
+    #[serde(default)]
+    connections: Vec<ModelConnection>,
     #[serde(default)]
     profile_id: String,
     #[serde(default)]
@@ -514,10 +528,22 @@ fn configure_runtime(state: &RuntimeState) -> Result<(), String> {
         .lock()
         .map_err(|_| "运行时状态锁损坏".to_string())?
         .clone();
+    let model_connections = if model.connections.is_empty() {
+        vec![ModelConnection {
+            id: "active".into(),
+            name: model.provider.clone(),
+            provider: model.provider.clone(),
+            endpoint: model.endpoint.clone(),
+            enabled: true,
+        }]
+    } else {
+        model.connections.clone()
+    };
     let mut params = serde_json::json!({
         "provider": model.provider,
         "endpoint": model.endpoint,
         "model": model.model,
+        "modelConnections": model_connections,
         "apiKey": api_key,
         "persona": persona_desc,
         "personaName": persona_name,

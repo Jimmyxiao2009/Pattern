@@ -1328,6 +1328,37 @@ fn show_main(app: AppHandle) -> Result<(), String> {
     window.set_focus().map_err(|error| error.to_string())
 }
 
+/// Presence layer: show or hide the desktop companion widget and apply its
+/// persisted placement / window settings. Never fails startup when the window
+/// is unavailable — presence is an optional layer.
+#[tauri::command]
+fn set_companion(
+    app: AppHandle,
+    visible: Option<bool>,
+    x: Option<i32>,
+    y: Option<i32>,
+    always_on_top: Option<bool>,
+) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("companion") else {
+        return Ok(false);
+    };
+    if let Some(top) = always_on_top {
+        let _ = window.set_always_on_top(top);
+    }
+    if let (Some(x), Some(y)) = (x, y) {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    if visible.unwrap_or(false) {
+        window.show().map_err(|error| error.to_string())?;
+        // Deliberately no set_focus(): the companion must never steal keyboard
+        // focus from the user's work (spec §三十二 — companion, not interruption).
+        let _ = window.set_always_on_top(always_on_top.unwrap_or(true));
+    } else {
+        let _ = window.hide();
+    }
+    Ok(true)
+}
+
 #[tauri::command]
 fn show_review(app: AppHandle, task_id: Option<String>) -> Result<(), String> {
     let focus_task_id = task_id.filter(|value| !value.is_empty());
@@ -1597,8 +1628,8 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Keep the desktop companion alive in the tray for main/quick/review.
-                if matches!(window.label(), "main" | "quick" | "review") {
+                // Keep the desktop companion alive in the tray for main/quick/review/companion.
+                if matches!(window.label(), "main" | "quick" | "review" | "companion") {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -1639,7 +1670,8 @@ pub fn run() {
             resume_computer_use,
             show_main,
             show_quick,
-            show_review
+            show_review,
+            set_companion
             ,permission_status
             ,open_permission_settings
         ])

@@ -52,6 +52,20 @@
         "center": true,
         "resizable": true,
         "visible": false
+      },
+      {
+        "label": "companion",
+        "title": "Pattern Companion",
+        "url": "index.html?window=companion",
+        "width": 260,
+        "height": 260,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": false
       }
     ],
     "security": {"csp": null}

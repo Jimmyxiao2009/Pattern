@@ -16,6 +16,8 @@ Pattern 是一个基于 **Tauri 2 + Svelte 5 + Node sidecar** 的桌面 AI 伴�
 | M3 Computer Use | 完成* | Windows UIA / macOS AX 优先 + 视觉坐标回退、逐步验证、T0–T3、审查/急停；Windows 工作区写操作接入 AgentOS 条件式恢复 |
 | M5 桌面打磨 | 大部完成 | 双槽模型、规则+小模型路由、人格卡、PLAA、Telegram、SMTP/IMAP、文件感知、本地通道插件、可配置快捷键 |
 | M4 移动端 | Android 可构建 | Tauri Mobile、WebDAV 对话/任务、X25519 安全配对、持久消息；Android debug APK 已验证，iOS 待 macOS |
+| M6 Pattern Engine | 完成* | 记忆之上的派生认知层：Pattern/Evidence 表、candidate→active→weakening→contradicted→archived 生命周期、增量提取 + 结构化校验、可解释证据、凌晨固化 |
+| M7 Presence 层 | 完成* | 形象/桌宠表达层：人格头像、透明置顶 Companion 窗、PresenceState、主动气泡、设置持久化；默认关闭需显式开启 |
 
 ## 开发与运行时要求
 
@@ -81,6 +83,9 @@ Sidecar 测试覆盖：
 
 - 流式对话 WS
 - 记忆 add/search/expire + FTS 中文粗排
+- Pattern DB（建/改/归档/删除、支持/反对证据、置信度钳制、生命周期、合并、keyword 检索）
+- Pattern 流水线（决策解析、边界钳制、畸形输出兜底、不安全标签拦截）
+- Presence（配置归一化/持久化/损坏兜底、状态推导、气泡开关）
 - 中继：local 游标去重、PROPFIND 解析、远程 list/pull
 - e2e：记忆 / 主动 / 任务（无 Bridge 失败）/ local 中继加密 / 第二设备 pull
 - 对话记忆注入 + 启发式提取（「我养了黑猫」）
@@ -92,6 +97,17 @@ Sidecar 测试覆盖：
 1. 正常聊天：说「我养了一只黄眼睛的黑猫」
 2. 打开「记忆」页应能搜到；新对话提问「我养了什么」应能用到
 3. 可手动添加/删除；「固化」触发衰减与容量整理
+
+### Pattern / 长期认识（M6）
+1. 多轮提到同一行为（如连续几天熬夜），系统自动沉淀具体记忆
+2. 打开「认识」页查看 Pattern 的置信度、状态与证据
+3. 问「你为什么觉得我…？」会返回可解释的原始记忆
+4. 「固化 Pattern」手动触发候选升级/衰减/合并
+
+### 形象与桌宠（M7）
+1. 设置 → 常规 → 形象与桌宠：导入人格头像（PNG/JPG）
+2. 「显示模式」选 头像（主窗口标题栏）或 桌宠（桌面常驻小窗）
+3. 桌宠可拖动、单击开快捷窗、双击开主窗、右键菜单；默认关闭
 
 ### 主动性（M2）
 1. 设置 → 主动性：打开深夜提醒、设定时间

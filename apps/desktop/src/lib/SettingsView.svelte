@@ -7,6 +7,14 @@
   import UsageCard from './UsageCard.svelte';
   import type {Persona, SlotBindings, Theme} from './types';
   import {runtime} from './runtime';
+  import {
+    presenceStore,
+    loadPersonaVisuals,
+    savePersonaVisuals,
+    applyCompanionWindow,
+    DEFAULT_PRESENCE_CONFIG,
+  } from './presence';
+  import type {PresenceConfig} from '@pattern/protocol';
 
   let {
     persona,
@@ -71,6 +79,9 @@
   let watchEvents = $state<Array<{id:string;path:string;decision:string;reason:string;ts:number}>>([]);
   let quickShortcut = $state('alt-space');
   let activeQuickShortcut = $state('alt-space');
+  // --- Presence layer ---
+  let presenceConfig = $state<PresenceConfig>(DEFAULT_PRESENCE_CONFIG);
+  let personaAssetDraft = $state('');
   type ModelProfile = {id:string; name:string; provider:string; endpoint:string; model:string; models?:string[]; executorProvider:string; executorEndpoint:string; executorModel:string; executorVision:boolean};
   let profiles = $state<ModelProfile[]>([]);
   let activeProfileId = $state('default');
@@ -105,6 +116,52 @@
       personaCards = personaCards.map((card, itemIndex) => itemIndex === index ? persona : card);
     }
   });
+
+  $effect(() => {
+    presenceConfig = presenceStore.config;
+    const unsubscribe = presenceStore.subscribe(() => {
+      presenceConfig = presenceStore.config;
+    });
+    return unsubscribe;
+  });
+
+  async function updatePresence(patch: Partial<PresenceConfig>) {
+    await presenceStore.update(patch);
+    presenceConfig = presenceStore.config;
+    void applyCompanionWindow(presenceConfig);
+    saved = '形象设置已保存';
+  }
+
+  async function setPresenceMode(mode: 'off' | 'avatar' | 'pet') {
+    await updatePresence({mode, enabled: mode !== 'off'});
+  }
+
+  async function importPersonaAsset(input: HTMLInputElement) {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    const name = persona?.name || 'Pattern';
+    // Guard quota: large images are rejected rather than silently truncated.
+    if (file.size > 4 * 1024 * 1024) {
+      personaAssetDraft = '图片超过 4MB，请压缩后再导入';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const visuals = loadPersonaVisuals();
+        visuals[name] = {...visuals[name], idle: String(reader.result), speaking: String(reader.result)};
+        savePersonaVisuals(visuals);
+        personaAssetDraft = `已为「${name}」设置形象`;
+      } catch {
+        personaAssetDraft = '保存失败：图片可能过大';
+      }
+    };
+    reader.onerror = () => {
+      personaAssetDraft = '读取图片失败';
+    };
+    reader.readAsDataURL(file);
+  }
 
   function personaCardMarkdown(card: Persona) {
     return `---\nname: ${card.name}\nuser_name: ${card.userName}\nproactive: ${card.proactive}\n---\n\n${card.description}\n`;
@@ -586,6 +643,35 @@ async function activatePersonaCard(card: Persona) {
             <span class="badge dim">不可用</span>
           {/if}
         </SettingRow>
+        <h2>形象与桌宠</h2>
+        <SettingRow title="显示模式" desc="关闭=仅窗口内使用；头像=主窗口显示人格头像；桌宠=常驻桌面小窗口">
+          <div class="segmented">
+            <button type="button" class:active={presenceConfig.mode === 'off'} onclick={() => setPresenceMode('off')}>关闭</button>
+            <button type="button" class:active={presenceConfig.mode === 'avatar'} onclick={() => setPresenceMode('avatar')}>头像</button>
+            <button type="button" class:active={presenceConfig.mode === 'pet'} onclick={() => setPresenceMode('pet')}>桌宠</button>
+          </div>
+        </SettingRow>
+        <SettingRow title="始终置顶" desc="桌宠窗口是否悬浮在其他窗口之上">
+          <Toggle checked={presenceConfig.alwaysOnTop} label="始终置顶" onChange={(value) => void updatePresence({alwaysOnTop: value})} />
+        </SettingRow>
+        <SettingRow title="气泡提醒" desc="主动消息到来时在桌宠旁弹出气泡">
+          <Toggle checked={presenceConfig.bubbleEnabled} label="气泡提醒" onChange={(value) => void updatePresence({bubbleEnabled: value})} />
+        </SettingRow>
+        <SettingRow title="主动气泡" desc="允许她通过桌宠气泡主动开口">
+          <Toggle checked={presenceConfig.proactiveBubbleEnabled} label="主动气泡" onChange={(value) => void updatePresence({proactiveBubbleEnabled: value})} />
+        </SettingRow>
+        <SettingRow title="透明度" desc="桌宠整体的不透明度">
+          <input type="range" min="0.4" max="1" step="0.05" value={presenceConfig.opacity} aria-label="桌宠透明度" onchange={(event) => void updatePresence({opacity: Number((event.currentTarget as HTMLInputElement).value)})} />
+        </SettingRow>
+        <SettingRow title="大小" desc="桌宠窗口的缩放比例">
+          <input type="range" min="0.6" max="1.6" step="0.1" value={presenceConfig.scale} aria-label="桌宠大小" onchange={(event) => void updatePresence({scale: Number((event.currentTarget as HTMLInputElement).value)})} />
+        </SettingRow>
+        <SettingRow title="人格形象" desc={`为「${persona?.name || '当前人格'}」导入头像图片（PNG/JPG），桌宠会优先使用它`}>
+          <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="导入人格头像" onchange={(event) => void importPersonaAsset(event.currentTarget as HTMLInputElement)} />
+        </SettingRow>
+        {#if personaAssetDraft}
+          <p class="settings-note">{personaAssetDraft}</p>
+        {/if}
       {:else if tab === 'persona'}
         <h2>当前人格</h2>
         <SettingRow title={persona?.name || '未定义'} desc={persona?.description || '尚未完成人格定义'}>

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the Pattern main window",
-  "windows": ["main", "quick", "review"],
+  "windows": ["main", "quick", "review", "companion"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

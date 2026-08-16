@@ -5,6 +5,7 @@
   import Oobe from './lib/Oobe.svelte';
   import QuickWindow from './lib/QuickWindow.svelte';
   import ReviewWindow from './lib/ReviewWindow.svelte';
+  import CompanionWidget from './lib/CompanionWidget.svelte';
   import PageHeader from './lib/PageHeader.svelte';
   import SettingsView from './lib/SettingsView.svelte';
   import MemoryEditor from './lib/MemoryEditor.svelte';
@@ -19,6 +20,7 @@
   import RecentsSidebar from './lib/RecentsSidebar.svelte';
   import ProjectWorkspace from './lib/ProjectWorkspace.svelte';
   import MessageContent from './lib/MessageContent.svelte';
+  import {getPersonaAsset, applyCompanionWindow, presenceStore} from './lib/presence';
   import type {ChatMessage, Conversation, FileNode, MemoryCategory, MemoryItem, ModelSetup, Persona, Project, Theme, ViewId} from './lib/types';
   import {categoryFromWire, categoryToWire, importanceStars, normalizeConversation, normalizeProject} from './lib/types';
   import {formatRuntimeError, runtime} from './lib/runtime';
@@ -43,7 +45,15 @@
   const params = new URLSearchParams(location.search);
   const isQuick = params.get('window') === 'quick';
   const isReview = params.get('window') === 'review';
+  const isCompanion = params.get('window') === 'companion';
   const isDemo = params.has('demo');
+
+  // Presence layer: persona avatar shown in the titlebar when enabled.
+  let presenceCfg = $state(presenceStore.config);
+  const titleAvatar = $derived.by(() => {
+    if (!persona || (!presenceCfg.enabled || presenceCfg.mode === 'off')) return undefined;
+    return getPersonaAsset(persona.name, 'idle');
+  });
 
   let activeView = $state<ViewId>('chat');
   let ready = $state(false);
@@ -1031,6 +1041,18 @@
     ready = true;
     void refreshForeground();
     void refreshMemoryProposals();
+    // Presence layer: restore the desktop companion window when pet mode is on.
+    // Main window only — never runs in quick/review/companion windows.
+    if (!isQuick && !isReview && !isCompanion && (window as any).__TAURI_INTERNALS__) {
+      void presenceStore.refreshFromRuntime().then(() => {
+        presenceCfg = presenceStore.config;
+        void applyCompanionWindow(presenceStore.config);
+      });
+      presenceStore.subscribe(() => {
+        presenceCfg = presenceStore.config;
+        void applyCompanionWindow(presenceStore.config);
+      });
+    }
     (window as any).__patternClockTimer && clearInterval((window as any).__patternClockTimer);
     (window as any).__patternClockTimer = setInterval(() => { clock = Date.now(); }, 60_000);
     const fgTimer = setInterval(() => { void refreshForeground(); }, 4000);
@@ -1924,12 +1946,15 @@ ${content}`;
   <QuickWindow />
 {:else if isReview}
   <ReviewWindow />
+{:else if isCompanion}
+  <CompanionWidget />
 {:else}
   {#if ready && !persona}<Oobe onComplete={savePersona} />{/if}
   {#if ready && redefiningPersona}<Oobe mode={personaEditorMode} initialPersona={personaEditorMode === 'redefine' ? persona : null} onComplete={savePersona} onCancel={() => (redefiningPersona = false)} />{/if}
   <main class="app-shell" inert={ready && !persona} aria-hidden={ready && !persona ? 'true' : undefined}>
     <header class="titlebar" data-tauri-drag-region>
       <div class="brand" data-tauri-drag-region>
+        {#if titleAvatar}<img class="brand-avatar" src={titleAvatar} alt="" data-tauri-drag-region />{/if}
         <StatusDot active={agentState !== 'idle'} />
         <strong data-tauri-drag-region>{persona?.name || 'Pattern'}</strong>
         <span data-tauri-drag-region>{nav.find((n) => n.id === activeView)?.label}</span>

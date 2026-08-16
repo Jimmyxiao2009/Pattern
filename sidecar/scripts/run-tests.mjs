@@ -13,6 +13,7 @@ const files = [
   'test/memory.test.mjs',
   'test/pattern-db.test.mjs',
   'test/pattern-pipeline.test.mjs',
+  'test/presence.test.mjs',
   'test/relay.test.mjs',
   'test/channels.test.mjs',
   'test/computer-use-text.test.mjs',

@@ -54,6 +54,7 @@ import {
   updatePatternsFromMemories,
   type PatternPipelineDeps,
 } from './pattern-pipeline';
+import {PresenceService} from './presence';
 interface ChatRequest {
   type: 'chat.send';
   id: string;
@@ -67,10 +68,13 @@ interface ChatRequest {
   attachments?: string[];
 }
 let agentState: 'idle' | 'thinking' | 'executing' | 'paused' | 'approval' = 'idle';
+let lastProactiveDeliveredAt: number | null = null;
+let presence: PresenceService | null = null;
 function setAgentState(state: typeof agentState) {
   if (agentState === state) return;
   agentState = state;
   broadcast({type: 'runtime.agent_state', state});
+  presence?.setState(presence.deriveState({agentState: state, hour: new Date().getHours(), idleSeconds: 0, lastProactiveAt: lastProactiveDeliveredAt, now: Date.now()}));
 }
 let config: RuntimeConfigure | null = null;
 const token = randomBytes(24).toString('base64url');
@@ -79,6 +83,11 @@ ensureDataDir(dataDir);
 const memory = new MemoryEngine(dataDir);
 const proactive = new ProactiveEngine(dataDir);
 let relay = new RelayClient(dataDir, null);
+presence = new PresenceService({
+  dataDir,
+  broadcast: (message) => broadcast(message),
+  log: (message, error) => (error !== undefined ? console.error('[pattern-sidecar]', message, error) : console.log('[pattern-sidecar]', message)),
+});
 // --- Pattern Engine pipeline (derived cognitive layer over memory) ---
 const patternPipelineDeps: PatternPipelineDeps = {
   memory,
@@ -3679,6 +3688,9 @@ async function deliverProactive(input: {body: string; type: string; reason: stri
   await emailSend(`${config?.personaName || 'Pattern'} · ${input.origin === 'ai' ? '主动消息' : '提醒'}`, input.body);
   await sendToPlugins(input.body, input.origin === 'ai' ? 'proactive' : 'notification');
   lastProactiveInjectAt = Date.now();
+  lastProactiveDeliveredAt = Date.now();
+  // Presence layer: companion widget can surface this as a bubble (spec §二十六).
+  presence?.emitProactiveBubble(input.body, input.origin === 'ai' ? 'concerned' : 'notification');
   broadcast({type: 'proactive.impulse', item});
   broadcast({type: 'proactive.inbox.updated', item});
   try { await relay.publish(relay.createEnvelope({role: 'companion', type: 'proactive', body: input.body})); }
@@ -4066,6 +4078,16 @@ async function handleClient(socket: WebSocket, message: ClientMessage) {
           merged: result.merged,
         });
         broadcast({type: 'pattern.changed'});
+        break;
+      }
+      // --- Presence layer ---
+      case 'presence.getConfig': {
+        send(socket, {type: 'presence.config', id: message.id, config: presence!.getConfig()});
+        break;
+      }
+      case 'presence.setConfig': {
+        const next = presence!.setConfig(message.config || {});
+        send(socket, {type: 'presence.config', id: message.id, config: next});
         break;
       }
       case 'runtime.foreground': {
@@ -4823,6 +4845,24 @@ setInterval(() => {
 }, 60_000);
 setInterval(() => { void proactiveChainTick(); }, 30_000);
 setInterval(() => { void powerTick(); }, 60_000);
+// Presence layer: keep time/idle-driven states (sleepy, away) fresh for the companion widget.
+setInterval(() => {
+  void (async () => {
+    try {
+      const idleSeconds = await getIdleSeconds();
+      const state = presence?.deriveState({
+        agentState,
+        hour: new Date().getHours(),
+        idleSeconds,
+        lastProactiveAt: lastProactiveDeliveredAt,
+        now: Date.now(),
+      });
+      if (state && presence) presence.setState(state);
+    } catch {
+      /* presence tick is best-effort */
+    }
+  })();
+}, 60_000);
 setInterval(() => { void plaaTick(); }, 10_000);
 setInterval(() => { void healthTick(); }, 60_000);
 setInterval(() => { void cronTick(); void scheduledTaskTick(); }, 30_000);

@@ -167,6 +167,55 @@ export interface PatternWithEvidence extends PatternRecord {
   evidence: PatternEvidenceRecord[];
 }
 
+// --- Presence layer (avatar / desktop pet) ---
+
+/** Front-end/sidecar shared lightweight presence state model (spec §二十五). */
+export type PresenceState =
+  | 'idle'
+  | 'speaking'
+  | 'thinking'
+  | 'happy'
+  | 'concerned'
+  | 'sleepy'
+  | 'busy'
+  | 'notification'
+  | 'away';
+
+export type PresenceAvatarMode = 'none' | 'avatar' | 'pet';
+
+/** Per-persona visual profile; one persona may later carry multiple skins. */
+export interface PersonaVisualProfile {
+  personaName: string;
+  displayName?: string;
+  avatarMode: PresenceAvatarMode;
+  /** Asset references (dataURL or file path). Missing entries fall back gracefully. */
+  assets: {
+    idle?: string;
+    happy?: string;
+    thinking?: string;
+    sleepy?: string;
+    concerned?: string;
+    busy?: string;
+    speaking?: string;
+    notification?: string;
+  };
+  appearancePrompt?: string;
+  notes?: string;
+}
+
+export interface PresenceConfig {
+  enabled: boolean;
+  mode: 'off' | 'avatar' | 'pet';
+  alwaysOnTop: boolean;
+  clickThroughWhenIdle: boolean;
+  position: {x: number | null; y: number | null};
+  scale: number;
+  opacity: number;
+  bubbleEnabled: boolean;
+  proactiveBubbleEnabled: boolean;
+  autoHideWhenFullscreen: boolean;
+}
+
 export interface ProactiveLogItem {
   id: string;
   type: string;
@@ -504,6 +553,8 @@ export type ClientMessage =
   | { type: 'pattern.archive'; id: string; patternId: string }
   | { type: 'pattern.delete'; id: string; patternId: string }
   | { type: 'pattern.consolidate'; id: string }
+  | { type: 'presence.getConfig'; id: string }
+  | { type: 'presence.setConfig'; id: string; config: Partial<PresenceConfig> }
   | { type: 'journal.list'; id: string; limit?: number; query?: string | null }
   | { type: 'security.policy.get'; id: string }
   | { type: 'security.policy.set'; id: string; policy: Partial<SecurityPolicy> }
@@ -577,4 +628,7 @@ export type ServerMessage =
   | { type: 'pattern.delete.result'; id: string; ok: boolean }
   | { type: 'pattern.consolidate.result'; id: string; at: number; promoted: number; weakened: number; contradicted: number; archived: number; merged: number }
   | { type: 'pattern.changed' }
+  | { type: 'presence.config'; id: string; config: PresenceConfig }
+  | { type: 'presence.state'; state: PresenceState; reason?: string }
+  | { type: 'presence.bubble'; text: string; state?: PresenceState; ts: number }
   | { type: 'error'; id: string; message: string };

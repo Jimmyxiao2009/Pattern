@@ -25,6 +25,8 @@
 | 中继 | WebDAV 信封 + 游标 + E2E 密钥 | ⚠️ mailbox 为 AES-256-GCM；local/远程 list、游标、outbox 与跨端收发已实现；设备配对已使用 X25519 + XChaCha20-Poly1305 双二维码交换 |
 | 角色槽 | companion / executor 双槽 + 路由 | ✅ 双模型、槽绑定、规则快路由 + utility 小模型分类、多人格切换 UI 已实现 |
 | 通道 | Channel 插件 | ✅ Telegram、SMTP、IMAP 已迁入 `packages/channels` 适配器；本地第三方插件支持 manifest 发现与显式启用 |
+| Pattern Engine | 记忆之上的派生认知层 | ✅ `packages/memory/src/pattern.ts`（pattern/pattern_evidence/pattern_fts 表，生命周期 candidate→active→weakening→contradicted→archived）+ `sidecar/src/pattern-pipeline.ts`（增量提取、结构化校验、不安全标签拦截）；检索注入 chat/proactive prompt，可解释工具；凌晨随 dreaming 固化 |
+| Presence 层 | 形象/桌宠表达层 | ✅ `sidecar/src/presence.ts` + `apps/desktop/src/lib/presence.ts` + `CompanionWidget.svelte`；人格头像（avatar）、透明置顶 companion 窗（pet）、PresenceState、主动气泡；设置持久化 `presence.json`，默认关闭 |
 
 ### 里程碑进度（诚实）
 
@@ -36,6 +38,8 @@
 | M3 Computer Use | ~88% | Win UIA / mac AX、视觉与无视觉无障碍树模式、T0–T3、审查窗、急停、journal；Windows 已接 AgentOS 用户态恢复，内核捕获与 mac 真机验收待完成 |
 | M4 移动端 | ~65% | WebDAV 对话/任务、安全配对、持久消息、前后台自适应同步、Android 原生工程与 debug APK 已验证；iOS 与系统级后台推送待平台验收 |
 | M5 打磨 | ~68% | 自启动、双槽路由、多人格 UI、权限检查、PLAA 挂载点、本地 Channel 插件管理与可配置快捷键已完成；签名公证与样式迁移待发布环境 |
+| M6 Pattern Engine | 完成* | 记忆之上的派生认知层；增量提取 + 证据约束 + 不安全语言护栏 + 可解释；详见 [`docs/PATTERN_ENGINE_AND_PRESENCE.md`](docs/PATTERN_ENGINE_AND_PRESENCE.md) |
+| M7 Presence 层 | 完成* | 头像模式 + 桌宠 Companion 窗（透明置顶、拖动、气泡、不抢焦点）；与主动性联动；详见上述文档 |
 
 **刻意延后**：pi 接入、Tailwind 迁移、mDNS、OneBot。PLAA 已提供可选 HTTP 挂载点；优先把桌面 MVP 做扎实。
 

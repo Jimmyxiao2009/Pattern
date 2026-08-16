@@ -2452,9 +2452,24 @@ function buildSystemPrompt(
     : '(no extra retrieval hits this turn)';
   const now = new Date();
   const allowSubAgents = context?.allowSubAgents !== false;
-  // Retrieve relevant long-term patterns for context augmentation (§九).
+  // Retrieve relevant long-term patterns for context augmentation (spec §九).
+  // Query sources: current message/topic text + this turn's memory hits.
   const patternQuery = context?.patternQuery?.trim() || '';
-  const patternHits = patternQuery ? memory.patterns.search(patternQuery, 4) : [];
+  const patternQueries = [
+    patternQuery,
+    ...memHits.slice(0, 3).map((m) => m.text.slice(0, 120)),
+  ].filter(Boolean);
+  const patternHits: Array<ReturnType<typeof memory.patterns.search>[number]> = [];
+  const seenPatternIds = new Set<string>();
+  for (const q of patternQueries) {
+    for (const hit of memory.patterns.search(q, 3)) {
+      if (seenPatternIds.has(hit.id)) continue;
+      seenPatternIds.add(hit.id);
+      patternHits.push(hit);
+      if (patternHits.length >= 4) break;
+    }
+    if (patternHits.length >= 4) break;
+  }
   const patternBlock = formatPatternsForPrompt(patternHits);
   const env = `Local time: ${now.toLocaleString('zh-CN')}. You are Pattern, a resident desktop companion agent (not a website chatbot).${plaaState?`\nPLAA emotional state: ${plaaState}`:''}`;
   const role = [

@@ -56,7 +56,8 @@ Conversation → Episodes/Memories → Evidence → Patterns → 对用户的长
 ### 检索与可解释性
 
 - `patterns.search(query)`：FTS + keyword 双通道，返回少量最相关 Pattern
-  （active 优先，低置信/已归档自动过滤）。
+  （active 优先，低置信/已归档自动过滤）。检索查询源为**当前消息 + 本轮记忆命中**
+  （spec §九），去重后合并注入，上限 4 条。
 - 聊天、主动消息、companion 回复的 system prompt 里只注入 `[Relevant long-term patterns]`
   片段（最多 4 条），并明确要求"自然融入、不要机械引用"。
 - Agent 工具：`list_patterns` / `search_patterns` / `explain_pattern`。

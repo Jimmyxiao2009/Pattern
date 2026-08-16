@@ -120,6 +120,53 @@ export interface MemoryRecord {
   meta?: string;
 }
 
+/** Derived cognitive layer: a long-term inference about the user formed from multiple memories. */
+export type PatternCategory =
+  | 'behavior'
+  | 'preference'
+  | 'relationship'
+  | 'state'
+  | 'work_style'
+  | 'communication'
+  | 'routine'
+  | 'other';
+
+export type PatternStatus = 'candidate' | 'active' | 'weakening' | 'contradicted' | 'archived';
+
+export interface PatternRecord {
+  id: string;
+  /** Stable human-readable description of an observed long-term pattern. */
+  text: string;
+  category: PatternCategory;
+  /** 0–1 confidence in the pattern. */
+  confidence: number;
+  status: PatternStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastObservedAt: number;
+  evidenceCount: number;
+  /** Optional structured metadata (e.g. observer persona id for future multi-observer support). */
+  metadata?: Record<string, unknown> | null;
+}
+
+/** A single piece of evidence linking a pattern to a source memory. */
+export type PatternEvidenceRelation = 'supports' | 'contradicts';
+
+export interface PatternEvidenceRecord {
+  id: string;
+  patternId: string;
+  memoryId: string;
+  relation: PatternEvidenceRelation;
+  /** 0–1 weight of this evidence piece. */
+  weight: number;
+  createdAt: number;
+  reason?: string | null;
+}
+
+export interface PatternWithEvidence extends PatternRecord {
+  evidence: PatternEvidenceRecord[];
+}
+
 export interface ProactiveLogItem {
   id: string;
   type: string;
@@ -449,6 +496,14 @@ export type ClientMessage =
   | { type: 'memory.propose.list'; id: string }
   | { type: 'memory.propose.accept'; id: string; proposalId: string }
   | { type: 'memory.propose.reject'; id: string; proposalId: string }
+  | { type: 'pattern.list'; id: string; query?: string | null; category?: string | null; status?: string | null; limit?: number }
+  | { type: 'pattern.get'; id: string; patternId: string }
+  | { type: 'pattern.search'; id: string; query: string; limit?: number }
+  | { type: 'pattern.evidence'; id: string; patternId: string }
+  | { type: 'pattern.update'; id: string; patternId: string; text?: string; category?: string | null; confidence?: number; status?: PatternStatus }
+  | { type: 'pattern.archive'; id: string; patternId: string }
+  | { type: 'pattern.delete'; id: string; patternId: string }
+  | { type: 'pattern.consolidate'; id: string }
   | { type: 'journal.list'; id: string; limit?: number; query?: string | null }
   | { type: 'security.policy.get'; id: string }
   | { type: 'security.policy.set'; id: string; policy: Partial<SecurityPolicy> }
@@ -513,4 +568,13 @@ export type ServerMessage =
   | { type: 'security.policy'; id: string; policy: SecurityPolicy }
   | { type: 'recovery.status.result'; id: string; available: boolean; store?: string; transactionCount: number; openCount: number; error?: string }
   | { type: 'runtime.foreground.result'; id: string; title: string; busyHint?: boolean }
+  | { type: 'pattern.list.result'; id: string; items: PatternRecord[] }
+  | { type: 'pattern.get.result'; id: string; pattern: PatternWithEvidence | null }
+  | { type: 'pattern.search.result'; id: string; items: PatternRecord[] }
+  | { type: 'pattern.evidence.result'; id: string; patternId: string; evidence: PatternEvidenceRecord[] }
+  | { type: 'pattern.update.result'; id: string; pattern: PatternRecord | null }
+  | { type: 'pattern.archive.result'; id: string; ok: boolean }
+  | { type: 'pattern.delete.result'; id: string; ok: boolean }
+  | { type: 'pattern.consolidate.result'; id: string; at: number; promoted: number; weakened: number; contradicted: number; archived: number; merged: number }
+  | { type: 'pattern.changed' }
   | { type: 'error'; id: string; message: string };

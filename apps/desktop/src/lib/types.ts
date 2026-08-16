@@ -1,4 +1,4 @@
-export type ViewId = 'chat' | 'conversations' | 'project' | 'memory' | 'tasks' | 'goals' | 'proactive' | 'workflows' | 'mcp' | 'channels' | 'settings';
+export type ViewId = 'chat' | 'conversations' | 'project' | 'memory' | 'patterns' | 'tasks' | 'goals' | 'proactive' | 'workflows' | 'mcp' | 'channels' | 'settings';
 export type Theme = 'night' | 'day' | 'ocean' | 'forest' | 'paper';
 export type MemoryCategory = '事实' | '偏好' | '事件' | '反馈' | '参考';
 export type ConversationScope = 'global' | 'project';

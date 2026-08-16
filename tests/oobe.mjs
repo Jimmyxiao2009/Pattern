@@ -17,7 +17,8 @@ await page.getByLabel('名字',{exact:true}).fill('测试人格');
 await page.getByLabel('性格与说话方式').fill('说话直接、清楚，重要的事情会主动提醒。');
 await assertFooterActionVisible('完成设置');
 await page.getByRole('button',{name:'完成设置'}).click();
-await page.getByRole('heading',{name:'新对话'}).waitFor();
+// The home heading is a time-of-day greeting; the stable main-window marker is the 新对话 button.
+await page.getByRole('button',{name:'新对话',exact:true}).waitFor();
 if(await page.getByText('首次启动').isVisible().catch(()=>false))throw new Error('OOBE did not close');
 await browser.close();
 console.log('OOBE completed and main window rendered');

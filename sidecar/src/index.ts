@@ -49,6 +49,11 @@ import {
   setSessionPlan,
   type SlashDeps,
 } from './slash-handlers';
+import {
+  formatPatternsForPrompt,
+  updatePatternsFromMemories,
+  type PatternPipelineDeps,
+} from './pattern-pipeline';
 interface ChatRequest {
   type: 'chat.send';
   id: string;
@@ -74,6 +79,58 @@ ensureDataDir(dataDir);
 const memory = new MemoryEngine(dataDir);
 const proactive = new ProactiveEngine(dataDir);
 let relay = new RelayClient(dataDir, null);
+// --- Pattern Engine pipeline (derived cognitive layer over memory) ---
+const patternPipelineDeps: PatternPipelineDeps = {
+  memory,
+  getModel: () => {
+    if (!config?.apiKey) return null;
+    const utility = config.utility;
+    return {
+      provider: utility?.provider || config.provider,
+      endpoint: utility?.endpoint || config.endpoint,
+      model: utility?.model || config.model,
+      apiKey: utility?.apiKey || config.apiKey,
+    };
+  },
+  recordUsage: (provider, model, usage, durationMs) => recordUsage(provider, model, usage, durationMs),
+  log: (message, error) => (error !== undefined ? console.error('[pattern-sidecar]', message, error) : console.log('[pattern-sidecar]', message)),
+};
+const patternMemoryQueue: string[] = [];
+let patternFlushTimer: NodeJS.Timeout | null = null;
+/** Queue a newly saved memory for incremental pattern extraction (debounced). */
+function queuePatternUpdate(memoryId: string) {
+  if (!memoryId || patternMemoryQueue.includes(memoryId)) return;
+  patternMemoryQueue.push(memoryId);
+  if (patternFlushTimer) return;
+  patternFlushTimer = setTimeout(() => {
+    patternFlushTimer = null;
+    void flushPatternQueue();
+  }, 5000);
+}
+async function flushPatternQueue() {
+  if (!patternMemoryQueue.length) return;
+  const batch = patternMemoryQueue.splice(0, 8);
+  try {
+    const outcome = await updatePatternsFromMemories(patternPipelineDeps, batch, {
+      observerId: config?.personaName || null,
+    });
+    if (outcome.supported.length || outcome.contradicted.length || outcome.updated.length || outcome.created.length) {
+      broadcast({type: 'pattern.changed'});
+      console.log(
+        `[pattern-sidecar] pattern pipeline: +${outcome.created.length} created, ${outcome.supported.length} supported, ${outcome.contradicted.length} contradicted, ${outcome.updated.length} updated, ${outcome.ignored} ignored, ${outcome.rejected} rejected`,
+      );
+    }
+  } catch (error) {
+    console.error('[pattern-sidecar] pattern pipeline failed', error);
+  }
+  // Remaining items beyond the batch size are flushed in the next cycle.
+  if (patternMemoryQueue.length && !patternFlushTimer) {
+    patternFlushTimer = setTimeout(() => {
+      patternFlushTimer = null;
+      void flushPatternQueue();
+    }, 2000);
+  }
+}
 let lastUserActivityAt = Math.floor(Date.now() / 1000);
 let tasks: TaskRecord[] = loadTasks();
 const queuedComputerUseTaskIds = new Set<string>();
@@ -654,6 +711,31 @@ function listPatternTools(): CompanionTool[] {
       },
       kind: 'pattern',
     },
+    // --- Pattern Engine (explainability: "why do you think this?") ---
+    {
+      serverId: PATTERN_SERVER_ID,
+      serverName: 'Pattern Runtime',
+      name: 'list_patterns',
+      description: '列出对用户已形成的长期 Pattern（行为/习惯/偏好等长期认识），可按状态过滤。当用户问「你怎么看我」「你了解我什么」时使用。',
+      inputSchema: {type: 'object', properties: {status: str, category: str, limit: {type: 'number'}}},
+      kind: 'pattern',
+    },
+    {
+      serverId: PATTERN_SERVER_ID,
+      serverName: 'Pattern Runtime',
+      name: 'search_patterns',
+      description: '按主题检索相关 Pattern（如 睡眠/工作/饮食）。',
+      inputSchema: {type: 'object', properties: {query: str}, required: ['query']},
+      kind: 'pattern',
+    },
+    {
+      serverId: PATTERN_SERVER_ID,
+      serverName: 'Pattern Runtime',
+      name: 'explain_pattern',
+      description: '解释为什么形成某个 Pattern：返回该 Pattern 的全部证据（支持/反对的原始记忆）。当用户问「你为什么觉得我…」「凭什么这么说」时必须调用，用真实证据回答而不是笼统地说「AI 推断」。',
+      inputSchema: {type: 'object', properties: {patternId: str, query: str}},
+      kind: 'pattern',
+    },
   ];
 }
 
@@ -1105,6 +1187,51 @@ async function executePatternTool(
       });
       broadcast({type: 'session_plan.updated', plan});
       return {ok: true, plan, message: formatSessionPlan(plan)};
+    }
+    // ── Pattern Engine ──
+    case 'list_patterns': {
+      const items = memory.patterns.list({
+        status: args.status ? String(args.status) : null,
+        category: args.category ? String(args.category) : null,
+        limit: Math.max(1, Math.min(50, Number(args.limit) || 20)),
+      });
+      if (!items.length) return {ok: true, patterns: [], message: '目前还没有形成稳定的 Pattern。'};
+      const lines = items.map((p) => `- [${p.status} conf=${p.confidence.toFixed(2)}] ${p.text}`);
+      return {ok: true, patterns: items, message: lines.join('\n')};
+    }
+    case 'search_patterns': {
+      const query = String(args.query || args.text || '').trim();
+      if (!query) throw new Error('search_patterns requires query');
+      const hits = memory.patterns.search(query, 6);
+      if (!hits.length) return {ok: true, patterns: [], message: `没有找到与「${query}」相关的 Pattern。`};
+      const lines = hits.map((p) => `- [${p.status} conf=${p.confidence.toFixed(2)}] ${p.text}`);
+      return {ok: true, patterns: hits.map(({score: _s, ...item}) => item), message: lines.join('\n')};
+    }
+    case 'explain_pattern': {
+      // Resolve pattern by explicit id or by best text match, then return full evidence
+      // with original memory texts so the model can answer "why do you think this?".
+      const patternId = String(args.patternId || args.pattern_id || '').trim();
+      const query = String(args.query || args.text || '').trim();
+      const pattern = patternId
+        ? memory.patterns.getWithEvidence(patternId)
+        : (() => {
+            const best = memory.patterns.search(query, 1)[0];
+            return best ? memory.patterns.getWithEvidence(best.id) : null;
+          })();
+      if (!pattern) {
+        return {ok: false, pattern: null, message: '没有找到该 Pattern，无法解释。请如实告知用户目前没有这条认识。'};
+      }
+      const evidenceLines = pattern.evidence.map((e) => {
+        const source = memory.get(e.memoryId);
+        const when = new Date(e.createdAt * 1000).toLocaleDateString('zh-CN');
+        return `- ${e.relation === 'supports' ? '支持' : '反对'} (${when}): ${source?.text || '(原始记忆已失效)'}`;
+      });
+      const message = [
+        `Pattern: ${pattern.text} [status=${pattern.status}, confidence=${pattern.confidence.toFixed(2)}]`,
+        evidenceLines.length ? '证据：' : '（暂无关联证据）',
+        ...evidenceLines,
+      ].join('\n');
+      return {ok: true, pattern, message};
     }
     default:
       throw new Error(`未知 Pattern 工具: ${toolName}`);
@@ -2301,6 +2428,8 @@ function buildSystemPrompt(
     attachments?: string[];
     allowSubAgents?: boolean;
     conversationId?: string;
+    /** Current user message / topic text used to retrieve relevant long-term patterns. */
+    patternQuery?: string;
   },
 ) {
   // Layers: persona (user) + primary runtime (product) + rules. Tool catalog is appended per-turn in runCompanionToolLoop.
@@ -2314,6 +2443,10 @@ function buildSystemPrompt(
     : '(no extra retrieval hits this turn)';
   const now = new Date();
   const allowSubAgents = context?.allowSubAgents !== false;
+  // Retrieve relevant long-term patterns for context augmentation (§九).
+  const patternQuery = context?.patternQuery?.trim() || '';
+  const patternHits = patternQuery ? memory.patterns.search(patternQuery, 4) : [];
+  const patternBlock = formatPatternsForPrompt(patternHits);
   const env = `Local time: ${now.toLocaleString('zh-CN')}. You are Pattern, a resident desktop companion agent (not a website chatbot).${plaaState?`\nPLAA emotional state: ${plaaState}`:''}`;
   const role = [
     'You are the primary agent: you own conversation, tools, and the user-facing answer.',
@@ -2361,6 +2494,7 @@ ${active.progress?.length ? `- Recent progress:\n${active.progress.slice(-5).map
 ${index}
 [Retrieved memory details]
 ${details}
+${patternBlock}
 [Environment]
 ${env}
 ${workspaceBlock}
@@ -3292,6 +3426,7 @@ async function chat(socket: WebSocket, message: ChatRequest) {
       attachments: message.attachments,
       allowSubAgents,
       conversationId: message.sessionId,
+      patternQuery: message.text,
     });
     const full = await runCompanionToolLoop(socket, enrichedMessage, system, controller.signal);
     void extractMemories(message.text, full, message.sessionId).then(() => {
@@ -3355,7 +3490,7 @@ async function decideProactive(chain: ProactiveChain): Promise<ProactiveDecision
   if (!config?.apiKey) throw new Error('未配置模型，无法生成 AI 主动消息');
   const hits = await memory.search(`${chain.purpose}\n${chain.context || ''}`, 5);
   if (hits.length) memory.touch(hits.map((item) => item.id));
-  const system = `${buildSystemPrompt(hits)}
+  const system = `${buildSystemPrompt(hits, 'companion', {patternQuery: `${chain.purpose}\n${chain.context || ''}`})}
 [Proactive wake-up]
 You are the user's companion, not a notification template.
 Speak like a real person who knows them: short, specific, natural, in the companion's language and personality.
@@ -3464,7 +3599,7 @@ async function companionReply(text: string): Promise<string> {
   if (!config?.apiKey) return '我收到了，但目前还没有配置可用模型。';
   const hits = await memory.search(text, 5);
   if (hits.length) memory.touch(hits.map((item) => item.id));
-  const system = buildSystemPrompt(hits);
+  const system = buildSystemPrompt(hits, 'companion', {patternQuery: text});
   const anthropic = config.provider.toLowerCase().includes('anthropic');
   const response = await fetch(endpoint(anthropic ? '/messages' : '/chat/completions'), anthropic ? {
     method:'POST', headers:{'content-type':'application/json','x-api-key':config.apiKey,'anthropic-version':'2023-06-01'},
@@ -3804,6 +3939,7 @@ async function handleClient(socket: WebSocket, message: ClientMessage) {
           importance: message.item.importance,
           sourceConv: message.item.sourceConv,
         });
+        queuePatternUpdate(item.id);
         send(socket, {type: 'memory.add.result', id: message.id, item});
         broadcast({type: 'memory.changed'});
         break;
@@ -3853,6 +3989,7 @@ async function handleClient(socket: WebSocket, message: ClientMessage) {
           importance: proposal.importance,
           sourceConv: proposal.sourceConv || null,
         });
+        queuePatternUpdate((saved.item || saved).id);
         memoryProposals = memoryProposals.filter((entry) => entry.id !== proposal.id);
         broadcast({type: 'memory.changed'});
         broadcast({type: 'memory.proposed', items: memoryProposals});
@@ -3863,6 +4000,72 @@ async function handleClient(socket: WebSocket, message: ClientMessage) {
         memoryProposals = memoryProposals.filter((entry) => entry.id !== message.proposalId);
         broadcast({type: 'memory.proposed', items: memoryProposals});
         send(socket, {type: 'memory.propose.reject.result', id: message.id, ok: true});
+        break;
+      }
+      // --- Pattern Engine (derived cognitive layer) ---
+      case 'pattern.list': {
+        const items = memory.patterns.list({
+          query: message.query ?? null,
+          category: message.category ?? null,
+          status: message.status ?? null,
+          limit: message.limit ?? 200,
+        });
+        send(socket, {type: 'pattern.list.result', id: message.id, items});
+        break;
+      }
+      case 'pattern.get': {
+        const pattern = memory.patterns.getWithEvidence(message.patternId);
+        send(socket, {type: 'pattern.get.result', id: message.id, pattern});
+        break;
+      }
+      case 'pattern.search': {
+        const limit = Math.max(1, Math.min(20, message.limit ?? 6));
+        const hits = memory.patterns.search(message.query, limit);
+        const items = hits.map(({score: _score, ...item}) => item);
+        send(socket, {type: 'pattern.search.result', id: message.id, items});
+        break;
+      }
+      case 'pattern.evidence': {
+        const evidence = memory.patterns.listEvidence(message.patternId);
+        send(socket, {type: 'pattern.evidence.result', id: message.id, patternId: message.patternId, evidence});
+        break;
+      }
+      case 'pattern.update': {
+        const pattern = memory.patterns.update(message.patternId, {
+          text: message.text,
+          category: message.category,
+          confidence: message.confidence,
+          status: message.status,
+        });
+        send(socket, {type: 'pattern.update.result', id: message.id, pattern});
+        if (pattern) broadcast({type: 'pattern.changed'});
+        break;
+      }
+      case 'pattern.archive': {
+        const ok = memory.patterns.archive(message.patternId);
+        send(socket, {type: 'pattern.archive.result', id: message.id, ok});
+        if (ok) broadcast({type: 'pattern.changed'});
+        break;
+      }
+      case 'pattern.delete': {
+        const ok = memory.patterns.delete(message.patternId);
+        send(socket, {type: 'pattern.delete.result', id: message.id, ok});
+        if (ok) broadcast({type: 'pattern.changed'});
+        break;
+      }
+      case 'pattern.consolidate': {
+        const result = memory.patterns.consolidate();
+        send(socket, {
+          type: 'pattern.consolidate.result',
+          id: message.id,
+          at: result.at,
+          promoted: result.promoted,
+          weakened: result.weakened,
+          contradicted: result.contradicted,
+          archived: result.archived,
+          merged: result.merged,
+        });
+        broadcast({type: 'pattern.changed'});
         break;
       }
       case 'runtime.foreground': {
@@ -4448,6 +4651,8 @@ case 'journal.list': {
       }
       case 'memory.consolidate': {
         const result = memory.consolidate();
+        // Pattern consolidation runs alongside memory consolidation (spec §十五).
+        const patternResult = memory.patterns.consolidate();
         send(socket, {
           type: 'memory.consolidate.result',
           id: message.id,
@@ -4455,7 +4660,11 @@ case 'journal.list': {
           decayed: result.decayed,
           evicted: result.evicted,
         });
+        console.log(
+          `[pattern-sidecar] consolidation: memory decayed=${result.decayed} evicted=${result.evicted}; pattern promoted=${patternResult.promoted} weakened=${patternResult.weakened} contradicted=${patternResult.contradicted} archived=${patternResult.archived} merged=${patternResult.merged}`,
+        );
         broadcast({type: 'memory.changed'});
+        broadcast({type: 'pattern.changed'});
         break;
       }
       case 'runtime.ping': {
@@ -4599,6 +4808,14 @@ setInterval(() => {
   if (d.getHours() === 3 && d.getMinutes() < 2) {
     void runDreamingJob(false).then((result) => console.log('[pattern-sidecar] dreaming', result));
     memory.consolidate(`${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`);
+    // Pattern Engine nightly consolidation (spec §十五): aging, promotion, merging.
+    try {
+      const patternResult = memory.patterns.consolidate();
+      console.log('[pattern-sidecar] nightly pattern consolidation', patternResult);
+      broadcast({type: 'pattern.changed'});
+    } catch (error) {
+      console.error('[pattern-sidecar] nightly pattern consolidation failed', error);
+    }
   }
 }, 60_000);
 setInterval(() => {

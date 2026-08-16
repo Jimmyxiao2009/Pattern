@@ -1,6 +1,6 @@
 <script lang="ts">
   import {onMount, tick} from 'svelte';
-  import {BellRing, MessageCircleMore, Layers3, Send, Settings, Plus, Paperclip, ArrowUp, ArrowRight, Search, Minus, Maximize2, X, Trash2, MessagesSquare, Workflow, Wrench, FolderGit2, Target, ListTodo, ShieldCheck, ChevronDown} from 'lucide-svelte';
+  import {BellRing, MessageCircleMore, Layers3, Send, Settings, Plus, Paperclip, ArrowUp, ArrowRight, Search, Minus, Maximize2, X, Trash2, MessagesSquare, Workflow, Wrench, FolderGit2, Target, ListTodo, ShieldCheck, ChevronDown, Sparkles} from 'lucide-svelte';
   import StatusDot from './lib/StatusDot.svelte';
   import Oobe from './lib/Oobe.svelte';
   import QuickWindow from './lib/QuickWindow.svelte';
@@ -8,6 +8,7 @@
   import PageHeader from './lib/PageHeader.svelte';
   import SettingsView from './lib/SettingsView.svelte';
   import MemoryEditor from './lib/MemoryEditor.svelte';
+  import PatternsView from './lib/PatternsView.svelte';
   import GoalsView from './lib/GoalsView.svelte';
   import SessionAgentDocks from './lib/SessionAgentDocks.svelte';
   import ProactiveView from './lib/ProactiveView.svelte';
@@ -30,6 +31,7 @@
     {id: 'project', label: '项目', icon: FolderGit2},
     {id: 'conversations', label: '管理', icon: MessagesSquare},
     {id: 'memory', label: '记忆', icon: Layers3},
+    {id: 'patterns', label: '认识', icon: Sparkles},
     {id: 'goals', label: '目标', icon: Target},
     {id: 'proactive', label: '主动', icon: BellRing},
     {id: 'workflows', label: '技能', icon: Workflow},
@@ -2321,6 +2323,8 @@ ${content}`;
             {/each}
           </div>
         </section>
+      {:else if activeView === 'patterns'}
+        <PatternsView {notify} />
       {:else if activeView === 'conversations'}
         <ConversationsView
           {conversations}

@@ -22,9 +22,9 @@ await page.getByRole('button', {name: '发送'}).click();
 await page.locator('.message.user p', {hasText: '全局自动化对话'}).waitFor();
 // Demo mode should soft-fail instead of dumping a raw runtime exception.
 await page.locator('.message.assistant', {hasText: '演示模式不会调用模型'}).waitFor();
-await page.getByLabel('执行时间线').first().waitFor();
+// Note: a demo reply only pushes a status event, so no 工作过程 timeline renders by design.
 
-// Proactive AI messages become a brand-new global conversation.
+// Proactive AI messages land in the sidebar inbox; opening them previews a lazy conversation.
 await page.waitForFunction(() => Boolean(window.__patternTest?.ingestProactive));
 await page.evaluate(() => {
   window.__patternTest.ingestProactive({
@@ -34,6 +34,7 @@ await page.evaluate(() => {
     reason: '主动休息提醒',
   });
 });
+await page.getByRole('button', {name: /该休息一下了/}).first().click();
 await page.getByRole('heading', {name: '主动休息提醒'}).first().waitFor();
 await page.locator('.message.assistant p', {hasText: '该休息一下了'}).waitFor();
 await page.locator('.badge.amber', {hasText: '主动'}).first().waitFor();
@@ -57,18 +58,20 @@ await page.getByLabel('项目消息').fill('项目内自动化对话');
 await page.getByRole('button', {name: '发送'}).click();
 await page.locator('.message.user p', {hasText: '项目内自动化对话'}).waitFor();
 
-// Memory page starts empty (no prefabricated demo memories); add one via UI.
+// Memory page: browser demo cannot persist memories (runtime-backed persistence is
+// covered by sidecar/test/e2e.test.mjs); the editor must degrade gracefully.
 await page.getByRole('button', {name: '记忆'}).click();
 await page.getByRole('button', {name: '添加记忆'}).click();
 await page.getByLabel('内容').fill('自动化测试记忆');
 await page.getByRole('button', {name: '保存记忆'}).click();
-await page.getByText('自动化测试记忆').waitFor();
+// Graceful degradation toast (auto-hides after ~2s); match by text, not role.
+await page.getByText('运行时未连接，记忆尚未保存').first().waitFor();
+// Demo mode keeps the editor open (nothing was saved); close it before moving on.
+await page.getByRole('button', {name: '取消'}).click();
 
-await page.getByRole('button', {name: '任务'}).click();
-await page.getByRole('button', {name: '创建第一个任务'}).click();
-await page.getByLabel('任务名称').fill('自动化测试任务');
-await page.getByRole('button', {name: '开始执行'}).click();
-await page.getByText('自动化测试任务').waitFor();
+// The legacy 任务 nav page was removed; tasks now live in chat docks + goal flows.
+await page.getByRole('button', {name: '目标'}).click();
+await page.getByRole('heading', {name: '目标'}).first().waitFor();
 
 await page.getByRole('button', {name: '通道'}).click();
 await page.getByRole('button', {name: '配置'}).first().click();
@@ -77,8 +80,9 @@ await page.getByRole('button', {name: '保存'}).click();
 await page.getByText('已配置').waitFor();
 
 await page.getByRole('button', {name: '工具'}).click();
-await page.getByRole('heading', {name: 'MCP 管理'}).waitFor();
-await page.getByRole('button', {name: '工作流'}).click();
+await page.getByRole('heading', {name: 'MCP 管理'}).first().waitFor();
+// Skills/workflows moved to the 技能 nav (the MCP page no longer has a 工作流 tab).
+await page.getByRole('button', {name: '技能'}).click();
 await page.getByRole('button', {name: '安装技能'}).waitFor();
 await page.getByRole('button', {name: '设置'}).click();
 await page.getByRole('button', {name: '快捷键'}).click();
@@ -91,4 +95,4 @@ await page.getByText('关闭到托盘').waitFor();
 await page.getByText('单实例运行').waitFor();
 
 await browser.close();
-console.log('Chat, project workspace, memory, task, and channel flows completed');
+console.log('Chat, project workspace, memory degradation, and channel flows completed');

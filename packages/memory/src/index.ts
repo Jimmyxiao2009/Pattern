@@ -3,8 +3,27 @@ import {createHash, randomUUID} from 'node:crypto';
 import {existsSync, mkdirSync, readFileSync, renameSync, writeFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import type {MemoryCategory, MemoryRecord} from '@pattern/protocol';
+import {PatternEngine} from './pattern';
 
 export type {MemoryCategory, MemoryRecord};
+export {PatternEngine} from './pattern';
+export type {
+  PatternCategory,
+  PatternEvidenceRecord,
+  PatternEvidenceRelation,
+  PatternRecord,
+  PatternStatus,
+  PatternWithEvidence,
+  PatternSearchHit,
+  PatternConsolidateResult,
+} from './pattern';
+export {
+  normalizePatternCategory,
+  patternCategoryLabel,
+  normalizePatternStatus,
+  normalizeEvidenceRelation,
+  sanitizeKeywords,
+} from './pattern';
 
 export interface SearchHit extends MemoryRecord {
   score: number;
@@ -180,11 +199,14 @@ export class MemoryEngine {
   private indexCache = '';
   private lastConsolidateAt: number | null = null;
   private embedFn: ((text: string) => Promise<Float32Array>) | null = null;
+  /** Derived cognitive layer sharing the same SQLite database. */
+  readonly patterns: PatternEngine;
 
   constructor(private dataDir: string) {
     mkdirSync(dataDir, {recursive: true});
     this.db = new Database(join(dataDir, 'memory.db'));
     this.db.exec('PRAGMA journal_mode = WAL;');
+    this.patterns = new PatternEngine(this.db);
     this.migrate();
     this.refreshIndex();
     this.loadMeta();
@@ -229,6 +251,8 @@ export class MemoryEngine {
     this.importLegacyJson();
     this.importLegacyImportance();
     this.ensureFtsV2();
+    // Derived cognitive layer: pattern tables share the same database.
+    this.patterns.migrate();
   }
 
   private ftsUpsert(id: string, text: string) {

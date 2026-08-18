@@ -1,0 +1,12 @@
+{
+  "name": "@pattern/agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "ai": "^7.0.0",
+    "@ai-sdk/openai": "^4.0.0",
+    "@ai-sdk/anthropic": "^4.0.0"
+  }
+}

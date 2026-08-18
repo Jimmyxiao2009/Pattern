@@ -55,6 +55,19 @@ import {
   type PatternPipelineDeps,
 } from './pattern-pipeline';
 import {PresenceService} from './presence';
+import {
+  resolveModel,
+  resolveUtilityModel,
+  streamChat as aiStreamChat,
+  generate as aiGenerate,
+  generateJson as aiGenerateJson,
+  buildTools as aiBuildTools,
+  type ModelConfig,
+  type CoreMessage,
+  type AgentTool,
+  type JSONSchema,
+  type StreamCallbacks,
+} from '@pattern/agent';
 interface ChatRequest {
   type: 'chat.send';
   id: string;
@@ -907,6 +920,60 @@ function companionToolsAsOpenAi(tools: CompanionTool[]) {
   }));
 }
 
+/** Resolve Pattern's RuntimeConfigure into a ModelConfig for the AI SDK. */
+function modelConfigFromRuntime(cfg: RuntimeConfigure): ModelConfig {
+  return {
+    provider: cfg.provider,
+    endpoint: cfg.endpoint,
+    model: cfg.model,
+    apiKey: cfg.apiKey,
+    utility: cfg.utility ? {
+      provider: cfg.utility.provider || cfg.provider,
+      endpoint: cfg.utility.endpoint || cfg.endpoint,
+      model: cfg.utility.model || cfg.model,
+      apiKey: cfg.utility.apiKey || cfg.apiKey,
+    } : undefined,
+  };
+}
+
+/** Convert Pattern's CompanionTool[] into AI SDK Tool records with execute functions. */
+function companionToolsAsAiSdk(
+  tools: CompanionTool[],
+  ctx: {conversationId?: string; workspace?: string; projectName?: string},
+): Record<string, import('@pattern/agent').Tool> {
+  const record: Record<string, import('@pattern/agent').Tool> = {};
+  for (const tool of tools.slice(0, 40)) {
+    const fnName = tool.kind === 'desktop'
+      ? `desktop__${tool.name}`
+      : tool.kind === 'pattern'
+        ? `pattern__${tool.name}`
+        : `${tool.serverId}__${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+    record[fnName] = {
+      description: tool.description.slice(0, 500),
+      inputSchema: (tool.inputSchema && typeof tool.inputSchema === 'object'
+        ? tool.inputSchema
+        : {type: 'object', properties: {}}) as JSONSchema,
+      execute: async (args: Record<string, unknown>) => {
+        const toolName = tool.name;
+        if (tool.kind === 'pattern') {
+          return executePatternTool(toolName, args, ctx);
+        }
+        if (tool.kind === 'desktop') {
+          const toolArgs = toolName === 'computer_use'
+            ? {...args, conversationId: ctx.conversationId, workspace: ctx.workspace, projectName: ctx.projectName}
+            : args;
+          return executeDesktopTool(toolName, toolArgs);
+        }
+        // MCP
+        const server = mcpServers.find((item) => item.id === tool.serverId);
+        if (!server) return {error: `MCP server ${tool.serverId} not found`};
+        return callMcpTool(server, toolName, args);
+      },
+    };
+  }
+  return record;
+}
+
 async function executePatternTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -1668,13 +1735,14 @@ ${companionToolCatalogText(tools)}
     },
   });
 
-  const openAiTools = companionToolsAsOpenAi(tools);
-  // Pure conversation (no desktop/MCP intent) → real provider SSE typewriter, no tool probe round-trip.
+  // --- Routing: pure conversation uses the legacy SSE streamer (fast, no tool
+  // probe); tool-capable turns use Vercel AI SDK with native tool calling. ---
   const mayNeedTools = tools.length > 0 && (
     shouldTransferToExecutor(message.text)
     || /(工具|打开|截图|点击|按键|启动|运行|创建|提醒|技能|工作流|循环|目标|计划|主动|computer\s*use|tool|launch|click|screenshot|mcp|skill|workflow|goal|loop|remind)/i.test(message.text)
   );
   if (!tools.length || !mayNeedTools) {
+    // Pure conversation: legacy SSE streamer (no AI SDK overhead).
     const full = await streamChat(socket, message, system, 'companion', signal, {
       emitStarted: false,
       emitDone: true,
@@ -1683,143 +1751,77 @@ ${companionToolCatalogText(tools)}
     return full;
   }
 
-  // Tool-capable turn: non-stream plan (native tool_calls + JSON protocol), then live-stream the final prose.
-  let result = await completeChatOnce(message, system, signal, {openAiTools});
-  let history = [...message.history, {role: 'user' as const, content: message.text}];
-  let usedTools = false;
-  for (let round = 0; round < 3; round++) {
-    if (signal?.aborted) throw new Error('aborted');
-    const toolCalls = result.toolCalls.length
-      ? result.toolCalls
-      : (extractCompanionToolPlan(result.content)?.toolCalls || []);
-    if (!toolCalls.length) break;
-    usedTools = true;
-    const observations: string[] = [];
-    for (const call of toolCalls.slice(0, 4)) {
-      const toolName = normalizeCompanionToolName(String(call.tool || ''));
-      const serverId = resolveCompanionServerId(call, toolName, tools);
-      const eventId = `tool:${message.id}:${round}:${serverId || 'x'}:${toolName || 'tool'}`;
-      const args = call.arguments && typeof call.arguments === 'object' ? call.arguments as Record<string, unknown> : {};
-      try {
-        if (
-          serverId === PATTERN_SERVER_ID
-          || toolName.startsWith('pattern_')
-          || tools.some((t) => t.kind === 'pattern' && t.name === toolName)
-        ) {
-          const patternName = toolName.replace(/^pattern_/, '');
-          send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'tool', action: `pattern.${patternName}`, text: `Pattern · ${patternName}`, status: 'running', ts: Date.now()}});
-          const toolResult = await executePatternTool(patternName, args, {
-            conversationId: message.sessionId,
-            workspace: message.workspace,
-            projectName: message.projectName,
-          });
-          const receipt = JSON.stringify(toolResult).slice(0, 8000);
-          observations.push(`pattern:${patternName}: ${receipt}`);
-          let doneText = `${patternName} 完成`;
-          if ((patternName === 'update_plan' || patternName === 'create_plan' || patternName === 'get_plan' || patternName === 'clear_plan')
-            && toolResult && typeof toolResult === 'object' && (toolResult as any).plan?.items) {
-            const planItems = (toolResult as any).plan.items as Array<{status?: string; content?: string}>;
-            const doneN = planItems.filter((i) => i.status === 'completed').length;
-            const totalN = planItems.filter((i) => i.status !== 'cancelled').length;
-            const running = planItems.find((i) => i.status === 'in_progress');
-            doneText = running
-              ? `会话计划 ${doneN}/${totalN} · 进行中：${String(running.content || '').slice(0, 40)}`
-              : `会话计划 ${doneN}/${totalN} 已更新`;
-          }
-          if ((patternName === 'update_goal' || patternName === 'create_goal' || patternName === 'control_goal' || patternName === 'get_goal')
-            && toolResult && typeof toolResult === 'object' && (toolResult as any).goal) {
-            const g = (toolResult as any).goal;
-            const tail = Array.isArray(g.progress) && g.progress.length ? String(g.progress[g.progress.length - 1]).slice(0, 48) : '';
-            doneText = g.status === 'done'
-              ? `目标已完成：${String(g.objective || '').slice(0, 40)}`
-              : `目标 · ${g.status}${tail ? ` · ${tail}` : ''}`;
-          }
-          if (patternName === 'create_reminder' || patternName === 'delete_reminder' || patternName === 'list_reminders') {
-            doneText = String((toolResult as any)?.message || doneText).slice(0, 80);
-          }
-          if (patternName === 'create_loop' || patternName === 'list_loops' || patternName === 'delete_loop') {
-            doneText = String((toolResult as any)?.message || doneText).slice(0, 80);
-          }
-          if (patternName === 'create_skill' || patternName === 'list_skills' || patternName === 'run_skill') {
-            doneText = String((toolResult as any)?.message || doneText).slice(0, 80);
-          }
-          send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'tool', action: `pattern.${patternName}`, text: doneText, status: 'done', receipt, ts: Date.now()}});
-          continue;
+  // --- Vercel AI SDK path: native tool calling with automatic multi-step ---
+  // The SDK handles the tool-call → execute → feed result → next step loop
+  // internally via maxSteps, replacing the hand-rolled 3-round loop.
+  const ctx = {
+    conversationId: message.sessionId,
+    workspace: message.workspace,
+    projectName: message.projectName,
+  };
+  const aiTools = tools.length > 0 ? companionToolsAsAiSdk(tools, ctx) : undefined;
+  const messages: CoreMessage[] = [
+    ...message.history.map((h) => ({role: h.role, content: h.content}) as CoreMessage),
+    {role: 'user', content: message.text} as CoreMessage,
+  ];
+
+  // Emit tool events as the SDK calls them.
+  let toolRound = 0;
+  const callbacks: StreamCallbacks = {
+    onDelta: (delta) => send(socket, {type: 'chat.delta', id: message.id, delta}),
+    onToolCall: (toolName, args) => {
+      const eventId = `tool:${message.id}:${toolRound}:${toolName}`;
+      const isPattern = toolName.startsWith('pattern__');
+      const isDesktop = toolName.startsWith('desktop__');
+      const action = isPattern ? `pattern.${toolName.replace('pattern__', '')}` : isDesktop ? `desktop.${toolName.replace('desktop__', '')}` : toolName;
+      const text = isPattern ? `Pattern · ${toolName.replace('pattern__', '')}` : isDesktop ? `桌面工具 ${toolName.replace('desktop__', '')}` : `调用 ${toolName}`;
+      send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: isDesktop ? 'tool' : isPattern ? 'tool' : 'mcp', action, text, status: 'running', ts: Date.now()}});
+    },
+    onToolResult: (toolName, result) => {
+      const eventId = `tool:${message.id}:${toolRound}:${toolName}`;
+      const receipt = JSON.stringify(result).slice(0, 8000);
+      const isPattern = toolName.startsWith('pattern__');
+      const isDesktop = toolName.startsWith('desktop__');
+      const shortName = toolName.replace(/^(pattern|desktop)__/, '').replace(/^[a-zA-Z0-9_-]+__/, '');
+      const resultTaskId = result && typeof result === 'object' && (result as any).taskId ? String((result as any).taskId) : undefined;
+      let doneText = `${shortName} 完成`;
+      if (isDesktop && toolName.includes('computer_use')) doneText = `已进入 computer-use · ${(result as any)?.title || shortName}`;
+      if (isPattern) {
+        const r = result as any;
+        if (r?.plan?.items) {
+          const done = r.plan.items.filter((i: any) => i.status === 'completed').length;
+          const total = r.plan.items.filter((i: any) => i.status !== 'cancelled').length;
+          doneText = `会话计划 ${done}/${total} 已更新`;
         }
-        if (serverId === DESKTOP_SERVER_ID || tools.some((t) => t.kind === 'desktop' && t.name === toolName && (!call.serverId || call.serverId === DESKTOP_SERVER_ID))) {
-          send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'tool', action: `desktop.${toolName}`, text: `桌面工具 ${toolName}`, status: 'running', ts: Date.now()}});
-          const toolArgs = toolName === 'computer_use'
-            ? {...args, conversationId: message.sessionId, workspace: message.workspace, projectName: message.projectName}
-            : args;
-          const toolResult = await executeDesktopTool(toolName, toolArgs);
-          const receipt = JSON.stringify(toolResult).slice(0, 8000);
-          observations.push(`desktop:${toolName}: ${receipt}`);
-          const resultTaskId = toolResult && typeof toolResult === 'object' && (toolResult as any).taskId ? String((toolResult as any).taskId) : undefined;
-          send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'tool', action: `desktop.${toolName}`, text: toolName === 'computer_use' ? `已进入 computer-use · ${(toolResult as any)?.title || toolName}` : `${toolName} 完成`, status: 'done', receipt, taskId: resultTaskId, ts: Date.now()}});
-          continue;
+        if (r?.goal) {
+          doneText = r.goal.status === 'done' ? `目标已完成` : `目标 · ${r.goal.status}`;
         }
-        const server = mcpServers.find((item) => item.id === serverId)
-          || mcpServers.find((item) => item.tools?.includes(toolName) || item.toolSchemas?.some((schema) => schema.name === toolName));
-        if (!server) {
-          observations.push(`${toolName}: 未找到工具（serverId=${serverId || '∅'}）`);
-          send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'tool', action: toolName, text: `${toolName}: 未找到服务`, status: 'failed', ts: Date.now()}});
-          continue;
-        }
-        send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'mcp', action: `${server.id}.${toolName}`, text: `调用 ${server.name}/${toolName}`, status: 'running', ts: Date.now()}});
-        const mcpResult = await callMcpTool(server, toolName, args);
-        const receipt = JSON.stringify(mcpResult).slice(0, 8000);
-        observations.push(`${server.id}:${toolName}: ${receipt}`);
-        send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: 'mcp', action: `${server.id}.${toolName}`, text: `${toolName} 完成`, status: 'done', receipt, ts: Date.now()}});
-      } catch (error) {
-        const err = error instanceof Error ? error.message : String(error);
-        observations.push(`${serverId || 'tool'}:${toolName}: 失败：${err}`);
-        send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: serverId === DESKTOP_SERVER_ID ? 'tool' : 'mcp', action: serverId === DESKTOP_SERVER_ID ? `desktop.${toolName}` : toolName, text: `${toolName} 失败：${err}`, status: 'failed', receipt: err, ts: Date.now()}});
+        if (r?.message) doneText = String(r.message).slice(0, 80);
       }
-    }
-    history = [
-      ...history,
-      {role: 'assistant' as const, content: result.content || result.raw || JSON.stringify({toolCalls})},
-      {role: 'user' as const, content: `[Tool receipts — facts only]\n${observations.join('\n')}\n说明：launch 回执若含 accessibility.controls，可直接用于 accessibility_action；若 foreground.title 仍是 Pattern，先 focus 再操作。\n请基于以上真实回执给出最终自然语言答复；不要再输出 toolCalls JSON，除非确实还需要另一轮工具。没有回执的动作不得声称成功。`},
-    ];
-    result = await completeChatOnce({
-      ...message,
-      text: history[history.length - 1]!.content,
-      history: history.slice(0, -1),
-    }, system, signal, {openAiTools});
-  }
+      send(socket, {type: 'chat.event', id: message.id, event: {id: eventId, kind: isDesktop ? 'tool' : isPattern ? 'tool' : 'mcp', action: isPattern ? `pattern.${shortName}` : isDesktop ? `desktop.${shortName}` : toolName, text: doneText, status: 'done', receipt, taskId: resultTaskId, ts: Date.now()}});
+      toolRound++;
+    },
+    onFinish: () => {
+      // idle state is set by caller after stream completes
+    },
+    onError: (error) => {
+      console.error('[pattern-sidecar] AI SDK stream error', error);
+    },
+  };
 
-  let finalText = (result.content || result.raw || '').trim();
-  if (extractCompanionToolPlan(finalText)?.toolCalls?.length) {
-    finalText = finalText.replace(/\{[\s\S]*"toolCalls"[\s\S]*\}/g, '').trim()
-      || (usedTools ? '已执行工具，但模型没有给出自然语言总结。' : '模型只返回了工具计划，未能完成调用。请重试。');
-  }
-
-  if (usedTools) {
-    // Live SSE wrap-up after tools (real provider token deltas).
-    const wrap = await streamChat(socket, {
-      ...message,
-      text: history[history.length - 1]?.content || message.text,
-      history: history.slice(0, -1),
-    }, `${system}\n[Final answer] Reply in natural language only. No toolCalls JSON.`, 'companion', signal, {
-      emitStarted: false,
-      emitDone: false,
-      setIdleOnDone: false,
-    });
-    finalText = wrap.trim() || finalText;
-  } else if (finalText) {
-    // Tool catalog exists but this turn needed no tools: avoid a second model call;
-    // emit paced deltas so the UI still typewrites instead of dumping the whole blob at once.
-    const chunkSize = 6;
-    for (let i = 0; i < finalText.length; i += chunkSize) {
-      if (signal?.aborted) break;
-      send(socket, {type: 'chat.delta', id: message.id, delta: finalText.slice(i, i + chunkSize)});
-      await new Promise((resolve) => setTimeout(resolve, 14));
-    }
-  }
+  const model = resolveModel(modelConfigFromRuntime(config!));
+  const fullText = await aiStreamChat(model, {
+    system,
+    messages,
+    tools: aiTools,
+    maxSteps: 8,
+    temperature: 0.7,
+    signal,
+  }, callbacks);
 
   send(socket, {type: 'chat.done', id: message.id, slot: 'companion'});
   setAgentState('idle');
-  return finalText;
+  return fullText;
 }
 
 async function askChildAgent(prompt: string, useAgentModel = true): Promise<string> {
@@ -2497,7 +2499,14 @@ ${formatSessionPlan(sessionPlan)}
     : `[Current session plan · todo checklist]
 - (empty) For multi-step work, create a short plan with pattern.update_plan or ask the user to /plan.`;
   const goalsNow = loadGoals(dataDir);
-  const active = goalsNow.find((g) => g.status === 'active' || g.status === 'paused' || g.status === 'blocked');
+  // Scope goals to the current conversation: a goal created in conversation A
+  // must not leak into conversation B's system prompt (spec: goal/plan are
+  // conversation-scoped, not global). Goals without a conversationId (created
+  // via /goal with no active session) remain global for backward compat.
+  const active = goalsNow.find((g) =>
+    (g.status === 'active' || g.status === 'paused' || g.status === 'blocked')
+    && (!context?.conversationId || !g.conversationId || g.conversationId === context.conversationId)
+  );
   const goalBlock = active
     ? `[Active goal · run-until-done]
 - Status: ${active.status}
